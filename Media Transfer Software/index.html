@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Document</title>
+
+	<style>
+		html, body {
+			height: 100%;
+			width: 100%;
+			margin: 0;
+		}
+
+		body {
+			background: #222;
+			color: #eee;
+
+			display: flex;
+			flex-direction: column;
+			align-items: center;
+
+			overflow: hidden;
+
+		}
+
+		button {
+			flex-grow: 1;
+			width: 100%;
+			font-size: 10vw;
+		}
+
+		textarea {
+			width: 100%;
+			flex-grow: 1;
+		}
+	</style>
+</head>
+<body>
+	
+
+	<button id="select">select folder</button>
+	<button id="pickLatest" disabled>pick latest file</button>
+
+	<textarea name="" id="status"></textarea>
+
+
+	<script>
+		let currentDirHandle = null;
+
+		function logToStatus(message) {
+			const statusEl = document.getElementById('status');
+			statusEl.value += message + '\n';
+			statusEl.scrollTop = statusEl.scrollHeight;
+		}
+
+		document.getElementById("select").addEventListener("click", () => {
+
+			pick().then(async (handle) => {
+				if (handle) {
+					currentDirHandle = handle;
+					document.getElementById("pickLatest").disabled = false;
+					
+					const latestFile = await statAllFiles(handle);
+					if (latestFile) {
+						logToStatus('=== LATEST MODIFIED FILE ===');
+						logToStatus(`Path: ${latestFile.path}`);
+						logToStatus(`Size: ${latestFile.size} bytes`);
+						logToStatus(`Last modified: ${latestFile.lastModified.toISOString()}`);
+						logToStatus(`Type: ${latestFile.type || 'unknown'}`);
+						logToStatus('============================');
+					} else {
+						logToStatus('No files found in the selected directory.');
+					}
+				}
+			});
+			
+		});
+
+		document.getElementById("pickLatest").addEventListener("click", async () => {
+			logToStatus("---------------------------------");
+			logToStatus("😛😛 I'M DOING THE THING NOW 😛😛");
+			logToStatus("---------------------------------");
+
+			document.getElementById("pickLatest").style.background = '#f00';
+
+
+			if (currentDirHandle) {
+				const latestFileInfo = await findLatestFile(currentDirHandle);
+				if (latestFileInfo) {
+					logToStatus('=== PICKED LATEST FILE ===');
+					logToStatus(`Path: ${latestFileInfo.path}`);
+					logToStatus(`Size: ${latestFileInfo.size} bytes`);
+					logToStatus(`Last modified: ${latestFileInfo.lastModified.toISOString()}`);
+					logToStatus(`Type: ${latestFileInfo.type || 'unknown'}`);
+					logToStatus('=========================');
+					
+					// Upload the file
+					await uploadFile(latestFileInfo.fileHandle, latestFileInfo.path);
+				} else {
+					logToStatus('No files found in the directory.');
+				}
+			}
+		});
+		
+		async function pick() {
+			try {
+				const dirHandle = await window.showDirectoryPicker();
+				return dirHandle;
+			} catch (error) {
+				logToStatus('Directory selection cancelled or failed: ' + error);
+				return null;
+			}
+		}
+
+		async function statAllFiles(dirHandle, path = '') {
+			let latestFile = null;
+			
+			try {
+				for await (const [name, handle] of dirHandle.entries()) {
+					const currentPath = path ? `${path}/${name}` : name;
+					
+					if (handle.kind === 'file') {
+						// Get file info
+						const file = await handle.getFile();
+						logToStatus(`File: ${currentPath}`);
+						logToStatus(`  Size: ${file.size} bytes`);
+						logToStatus(`  Last modified: ${new Date(file.lastModified).toISOString()}`);
+						logToStatus(`  Type: ${file.type || 'unknown'}`);
+						logToStatus('---');
+						
+						// Check if this is the latest modified file
+						if (!latestFile || file.lastModified > latestFile.lastModified.getTime()) {
+							latestFile = {
+								path: currentPath,
+								size: file.size,
+								lastModified: new Date(file.lastModified),
+								type: file.type
+							};
+						}
+					} else if (handle.kind === 'directory') {
+						logToStatus(`Directory: ${currentPath}/`);
+						// Recursively stat files in subdirectories
+						const subLatest = await statAllFiles(handle, currentPath);
+						
+						// Compare with subdirectory's latest file
+						if (subLatest && (!latestFile || subLatest.lastModified.getTime() > latestFile.lastModified.getTime())) {
+							latestFile = subLatest;
+						}
+					}
+				}
+			} catch (error) {
+				logToStatus('Error reading directory: ' + error);
+			}
+			
+			return latestFile;
+		}
+
+		async function findLatestFile(dirHandle, path = '') {
+			let latestFile = null;
+			
+			try {
+				for await (const [name, handle] of dirHandle.entries()) {
+					const currentPath = path ? `${path}/${name}` : name;
+					
+					if (handle.kind === 'file') {
+						// Get file info
+						const file = await handle.getFile();
+						
+						// Check if this is the latest modified file
+						if (!latestFile || file.lastModified > latestFile.lastModified.getTime()) {
+							latestFile = {
+								path: currentPath,
+								size: file.size,
+								lastModified: new Date(file.lastModified),
+								type: file.type,
+								fileHandle: handle
+							};
+						}
+					} else if (handle.kind === 'directory') {
+						// Recursively find latest file in subdirectories
+						const subLatest = await findLatestFile(handle, currentPath);
+						
+						// Compare with subdirectory's latest file
+						if (subLatest && (!latestFile || subLatest.lastModified.getTime() > latestFile.lastModified.getTime())) {
+							latestFile = subLatest;
+						}
+					}
+				}
+			} catch (error) {
+				logToStatus('Error reading directory: ' + error);
+			}
+			
+			return latestFile;
+		}
+
+		async function uploadFile(fileHandle, filePath) {
+			try {
+				logToStatus('Starting file upload...');
+				
+				// Get the actual file content
+				const file = await fileHandle.getFile();
+				
+				const formData = new FormData();
+				formData.append('file', file);
+				formData.append('path', filePath);
+				
+				const uploadEndpoint = 'https://192.168.1.38:3443/upload';	
+				const response = await fetch(uploadEndpoint, {
+					method: 'POST',
+					body: formData
+				});
+				
+				if (response.ok) {
+					const result = await response.json();
+					logToStatus('😛😛👍👍👍 File uploaded successfully! (too easy tbh 🥱🥱🥱)');
+					logToStatus('😛😛👍👍👍 File uploaded successfully! (too easy tbh 🥱🥱🥱)');
+					// logToStatus('Server response: ' + JSON.stringify(result));
+
+					document.getElementById("pickLatest").style.background = '';
+
+				} else {
+					logToStatus('❌ Upload failed: ' + response.status + ' ' + response.statusText);
+					const errorText = await response.text();
+					logToStatus('Error details: ' + errorText);
+				}
+			} catch (error) {
+				logToStatus('Claude sucks at programming fr 😭😭😭:' + error);
+			}
+		}
+
+	</script>
+</body>
+</html>
